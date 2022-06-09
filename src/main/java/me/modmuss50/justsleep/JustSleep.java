@@ -1,97 +1,91 @@
 package me.modmuss50.justsleep;
 
-import net.minecraft.entity.player.EntityPlayer;
-import net.minecraft.entity.player.EntityPlayerMP;
+import io.netty.buffer.Unpooled;
+import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.network.ClientSidePacketRegistry;
+import net.fabricmc.fabric.api.network.PacketRegistry;
+import net.fabricmc.fabric.api.network.ServerSidePacketRegistry;
+import net.minecraft.client.network.packet.CustomPayloadS2CPacket;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.network.packet.CustomPayloadC2SPacket;
+import net.minecraft.util.Identifier;
+import net.minecraft.util.PacketByteBuf;
 import net.minecraft.util.math.BlockPos;
-import net.minecraftforge.event.entity.player.PlayerSetSpawnEvent;
-import net.minecraftforge.event.entity.player.PlayerSleepInBedEvent;
-import net.minecraftforge.event.entity.player.PlayerWakeUpEvent;
-import net.minecraftforge.fml.common.Mod;
-import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
-import net.minecraftforge.fml.relauncher.Side;
+import net.minecraft.util.math.Vec3d;
 import org.apache.commons.lang3.Validate;
-import reborncore.common.network.NetworkManager;
-import reborncore.common.network.RegisterPacketEvent;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Optional;
 import java.util.Set;
 
-@Mod.EventBusSubscriber
-@Mod(modid = "justsleep", name = "Just Sleep", dependencies = "required-after:reborncore", version = "@MODVERSION@")
-public class JustSleep {
+public class JustSleep implements ModInitializer {
 
-	//TODO EntityPlayer.wakeUpPlayer
+	public static final Identifier SYNC_BED_STATUS = new Identifier("justsleep", "sync_bed_status");
+	public static final Identifier SET_SPAWN = new Identifier("justsleep", "set_spawn");
 
 	//This is a list of players that should skip setting the spawn next time the event is fired.
-	static Set<String> playerSpawnSetSkip = new HashSet<>();
+	public static Set<String> playerSpawnSetSkip = new HashSet<>();
 
 	//Client side aware map of the players bed locations
 	private static HashMap<String, BlockPos> validBedMap = new HashMap<>();
 
-	@SubscribeEvent
-	public static void spawnSet(PlayerSetSpawnEvent event) {
-		String uuid = event.getEntityPlayer().getUniqueID().toString();
-		if (playerSpawnSetSkip.contains(uuid)) {
-			playerSpawnSetSkip.remove(uuid);
-			event.setCanceled(true);
-		}
-	}
-
-	@SubscribeEvent
-	public static void wakeUp(PlayerWakeUpEvent event) {
-		if (event.shouldSetSpawn()) {
-			String uuid = event.getEntityPlayer().getUniqueID().toString();
-			if (hasValidBedLocation(event.getEntityPlayer())) {
-				playerSpawnSetSkip.add(uuid);
-			}
-		}
-	}
-
-	@SubscribeEvent
-	public static void sleep(PlayerSleepInBedEvent event) {
-		if (!event.getEntityPlayer().world.isRemote && event.getEntityPlayer() instanceof EntityPlayerMP) {
-			updateBedMap((EntityPlayerMP) event.getEntityPlayer());
-		}
-	}
-
-	public static boolean hasValidBedLocation(EntityPlayer player) {
+	public static boolean hasValidBedLocation(PlayerEntity player) {
 		return getBedLocation(player) != null;
 	}
 
-	public static BlockPos getBedLocation(EntityPlayer player) {
-		String uuid = player.getUniqueID().toString();
-		if (player.world.isRemote) {
+	public static BlockPos getBedLocation(PlayerEntity player) {
+		String uuid = player.getUuid().toString();
+		if (player.world.isClient) {
 			return validBedMap.getOrDefault(uuid, null);
 		}
-		BlockPos bedLocation = player.getBedLocation(player.dimension);
+		BlockPos bedLocation = player.getSpawnPosition();
 		if (bedLocation == null) {
 			return null;
 		}
-		BlockPos bedSpawnLocation = EntityPlayer.getBedSpawnLocation(player.world, bedLocation, false);
-		return bedSpawnLocation;
+		//method_7288 = getBedSpawn
+		Optional<Vec3d> bedSpawnLocation = PlayerEntity.method_7288(player.world, bedLocation, false);
+		return bedSpawnLocation.map(BlockPos::new).orElse(null);
 	}
 
-	@SubscribeEvent
-	public static void registerPacket(RegisterPacketEvent event) {
-		event.registerPacket(SetPlayerSpawnPacket.class, Side.SERVER);
-		event.registerPacket(SyncBedStatusPacket.class, Side.CLIENT);
-	}
-
-	public static void updateClientBedLocation(EntityPlayer player, BlockPos pos) {
-		Validate.isTrue(player.world.isRemote);
-		String uuid = player.getUniqueID().toString();
+	public static void updateClientBedLocation(PlayerEntity player, BlockPos pos) {
+		Validate.isTrue(player.world.isClient);
+		String uuid = player.getUuid().toString();
 		validBedMap.remove(uuid);
 		validBedMap.put(uuid, pos);
 
 	}
 
-	public static void updateBedMap(EntityPlayerMP player) {
-		BlockPos pos = player.getBedLocation(player.dimension);
+	public static void updateBedMap(ServerPlayerEntity player) {
+		BlockPos pos = player.getSpawnPosition();
 		if (!hasValidBedLocation(player)) {
 			pos = null;
 		}
-		NetworkManager.sendToPlayer(new SyncBedStatusPacket(pos), player);
+		player.networkHandler.sendPacket(createBedStatusPacket(pos));
+	}
+
+	@Override
+	public void onInitialize() {
+		ServerSidePacketRegistry.INSTANCE.register(SET_SPAWN, (packetContext, packetByteBuf) -> {
+			PlayerEntity player = packetContext.getPlayer();
+			if (player.isSleeping()) {
+				player.getSleepingPosition().ifPresent((blockPos) -> player.setPlayerSpawn(blockPos, false, false));
+			}
+		});
+	}
+
+	public static CustomPayloadS2CPacket createBedStatusPacket(BlockPos pos) {
+		PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
+		buf.writeBoolean(pos != null);
+		if (pos != null) {
+			buf.writeBlockPos(pos);
+		}
+		return new CustomPayloadS2CPacket(SYNC_BED_STATUS, buf);
+	}
+
+	public static CustomPayloadC2SPacket createSetSpawnPacket() {
+		return new CustomPayloadC2SPacket(SET_SPAWN, new PacketByteBuf(Unpooled.buffer()));
 	}
 
 }

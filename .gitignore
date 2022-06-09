@@ -2,12 +2,13 @@
 /*.ipr
 /*.iml
 *.iml
+*.iws
 /bin
 /.idea
 /.gradle
 /build
 /out
-
+/classes
 
 
 

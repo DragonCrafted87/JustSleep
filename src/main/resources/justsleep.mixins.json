@@ -1,0 +1,14 @@
+{
+  "required": true,
+  "package": "me.modmuss50.justsleep.mixin",
+  "compatibilityLevel": "JAVA_8",
+  "mixins": [
+    "MixinEntityPlayer"
+  ],
+  "client": [
+    "MixinGuiChatSleeping"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
